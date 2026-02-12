@@ -1,6 +1,6 @@
 //! Standard gRPC server runner for Rust holons.
 
-use crate::transport::{self, DEFAULT_URI};
+use crate::transport::DEFAULT_URI;
 
 /// Extract --listen or --port from command-line args.
 pub fn parse_flags(args: &[String]) -> String {

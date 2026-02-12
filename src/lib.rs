@@ -2,6 +2,6 @@
 //!
 //! Transport, serve, and identity utilities for building holons in Rust.
 
-pub mod transport;
-pub mod serve;
 pub mod identity;
+pub mod serve;
+pub mod transport;

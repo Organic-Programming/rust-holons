@@ -24,9 +24,26 @@ utilities for building holons in Rust.
 
 | Module | Description |
 |--------|-------------|
-| `holons::transport` | `listen(uri)` — async URI-based listener factory (tcp, unix, stdio, mem) |
-| `holons::serve` | `parse_flags()` — CLI arg extraction |
-| `holons::identity` | `parse_holon(path)` — HOLON.md parser with serde |
+| `holons::transport` | `listen(uri)`, `parse_uri(uri)`, `scheme(uri)` |
+| `holons::serve` | `parse_flags(args)` |
+| `holons::identity` | `parse_holon(path)` |
+
+## Transport URI support
+
+Recognized:
+
+- `tcp://`
+- `unix://`
+- `stdio://`
+- `mem://`
+- `ws://`
+- `wss://`
+
+Current runtime listeners:
+
+- native async listeners: `tcp://`, `unix://`
+- in-process test listener: `mem://`
+- `ws://` / `wss://` currently provide normalized listener metadata in `transport::Listener::Ws`
 
 ## Test
 
