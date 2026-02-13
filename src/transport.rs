@@ -9,9 +9,12 @@
 //!   - `wss://<host>:<port>` — WebSocket-over-TLS URI surface
 
 use std::io;
+use std::pin::Pin;
 use std::net::SocketAddr;
+use std::task::{Context, Poll};
 
-use tokio::net::{TcpListener, UnixListener};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, Stdin, Stdout};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 /// Default transport URI when --listen is omitted.
 pub const DEFAULT_URI: &str = "tcp://:9090";
@@ -45,6 +48,58 @@ pub struct WSListener {
     pub secure: bool,
 }
 
+/// Bidirectional stdio transport: reads from stdin and writes to stdout.
+pub struct StdioTransport<R = Stdin, W = Stdout> {
+    reader: R,
+    writer: W,
+}
+
+impl<R, W> StdioTransport<R, W> {
+    pub fn new(reader: R, writer: W) -> Self {
+        Self { reader, writer }
+    }
+}
+
+impl<R, W> AsyncRead for StdioTransport<R, W>
+where
+    R: AsyncRead + Unpin,
+    W: Unpin,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.reader).poll_read(cx, buf)
+    }
+}
+
+impl<R, W> AsyncWrite for StdioTransport<R, W>
+where
+    R: Unpin,
+    W: AsyncWrite + Unpin,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.writer).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.writer).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.writer).poll_shutdown(cx)
+    }
+}
+
 /// Parse a transport URI and bind/create the appropriate listener.
 pub async fn listen(uri: &str) -> io::Result<Listener> {
     let parsed = parse_uri(uri).map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
@@ -75,6 +130,44 @@ pub async fn listen(uri: &str) -> io::Result<Listener> {
             format!("unsupported transport URI: {uri:?}"),
         )),
     }
+}
+
+/// Create a stdio transport that can be passed to async gRPC adapters.
+pub fn listen_stdio() -> io::Result<StdioTransport> {
+    Ok(StdioTransport::new(tokio::io::stdin(), tokio::io::stdout()))
+}
+
+/// Dial a remote TCP listener from a `tcp://` URI.
+pub async fn dial_tcp(uri: &str) -> io::Result<TcpStream> {
+    let parsed = parse_uri(uri).map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    if parsed.scheme != "tcp" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("dial_tcp expects tcp:// URI, got {uri:?}"),
+        ));
+    }
+    let host = parsed.host.unwrap_or_else(|| "127.0.0.1".to_string());
+    let port = parsed.port.unwrap_or(9090);
+    TcpStream::connect(format!("{host}:{port}")).await
+}
+
+/// Dial a remote Unix-domain listener from a `unix://` URI.
+pub async fn dial_unix(uri: &str) -> io::Result<UnixStream> {
+    let parsed = parse_uri(uri).map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    if parsed.scheme != "unix" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("dial_unix expects unix:// URI, got {uri:?}"),
+        ));
+    }
+    let path = parsed.path.unwrap_or_default();
+    if path.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unix URI requires a path: {uri:?}"),
+        ));
+    }
+    UnixStream::connect(path).await
 }
 
 /// Extract the transport scheme from a URI.
@@ -235,6 +328,7 @@ fn split_host_port(value: &str, default_port: u16) -> Result<(String, u16), Stri
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
@@ -332,5 +426,95 @@ mod tests {
     async fn test_unsupported_uri() {
         let result = listen("ftp://host").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_tcp_dial_roundtrip() {
+        let lis = listen("tcp://127.0.0.1:0").await.unwrap();
+        let tcp = match lis {
+            Listener::Tcp(l) => l,
+            _ => panic!("expected Tcp listener"),
+        };
+        let addr = tcp.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = tcp.accept().await.unwrap();
+            let mut buf = [0u8; 4];
+            socket.read_exact(&mut buf).await.unwrap();
+            socket.write_all(&buf).await.unwrap();
+            socket.flush().await.unwrap();
+        });
+
+        let mut client = dial_tcp(&format!("tcp://{addr}")).await.unwrap();
+        client.write_all(b"ping").await.unwrap();
+        client.flush().await.unwrap();
+
+        let mut out = [0u8; 4];
+        client.read_exact(&mut out).await.unwrap();
+        assert_eq!(&out, b"ping");
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_unix_dial_roundtrip() {
+        let path = std::env::temp_dir().join(format!(
+            "holons_rust_unix_{}_{}.sock",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::from_secs(0))
+                .as_nanos()
+        ));
+        let uri = format!("unix://{}", path.display());
+
+        let lis = listen(&uri).await.unwrap();
+        let unix = match lis {
+            Listener::Unix(l) => l,
+            _ => panic!("expected Unix listener"),
+        };
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = unix.accept().await.unwrap();
+            let mut buf = [0u8; 3];
+            socket.read_exact(&mut buf).await.unwrap();
+            socket.write_all(&buf).await.unwrap();
+            socket.flush().await.unwrap();
+        });
+
+        let mut client = dial_unix(&uri).await.unwrap();
+        client.write_all(b"hey").await.unwrap();
+        client.flush().await.unwrap();
+
+        let mut out = [0u8; 3];
+        client.read_exact(&mut out).await.unwrap();
+        assert_eq!(&out, b"hey");
+
+        server.await.unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn test_stdio_listen_roundtrip() {
+        let (mut client_write, listener_read) = tokio::io::duplex(1024);
+        let (listener_write, mut client_read) = tokio::io::duplex(1024);
+        let mut stdio = StdioTransport::new(listener_read, listener_write);
+
+        let server = tokio::spawn(async move {
+            let mut buf = [0u8; 5];
+            stdio.read_exact(&mut buf).await.unwrap();
+            stdio.write_all(&buf).await.unwrap();
+            stdio.flush().await.unwrap();
+        });
+
+        client_write.write_all(b"stdio").await.unwrap();
+        client_write.flush().await.unwrap();
+
+        let mut out = [0u8; 5];
+        client_read.read_exact(&mut out).await.unwrap();
+        assert_eq!(&out, b"stdio");
+
+        server.await.unwrap();
+        let _ = listen_stdio().unwrap();
     }
 }
