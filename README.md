@@ -5,7 +5,7 @@ author:
   name: "B. ALTER"
   copyright: "© 2026 Benoit Pereira da Silva"
 created: 2026-02-12
-revised: 2026-02-12
+revised: 2026-02-13
 lang: en-US
 origin_lang: en-US
 translation_of: null
@@ -44,6 +44,25 @@ Current runtime listeners:
 - native async listeners: `tcp://`, `unix://`
 - in-process test listener: `mem://`
 - `ws://` / `wss://` currently provide normalized listener metadata in `transport::Listener::Ws`
+
+## Parity Notes vs Go Reference
+
+Implemented parity:
+
+- URI parsing and listener dispatch semantics
+- Native runtime listeners for `tcp://`, `unix://`, and `mem://`
+- Standard serve flag parsing
+- HOLON identity parsing
+
+Not currently achievable in this minimal Rust core (justified gaps):
+
+- `stdio://` runtime listener parity:
+  - Tonic/Tokio server integration does not provide an official stdio transport listener equivalent to Go `net.Listener`.
+- `ws://` / `wss://` runtime listener parity:
+  - No official tonic WebSocket server transport for standard gRPC HTTP/2 framing.
+  - Exposed as metadata only.
+- Transport-agnostic gRPC client helpers (`Dial`, `DialStdio`, `DialMem`, `DialWebSocket`):
+  - Requires a dedicated tonic adapter module that is not yet included.
 
 ## Test
 
