@@ -61,6 +61,9 @@ Not currently achievable in this minimal Rust core (justified gaps):
 - `ws://` / `wss://` runtime listener parity:
   - No official tonic WebSocket server transport for standard gRPC HTTP/2 framing.
   - Exposed as metadata only.
+- gRPC `Dial("ws://...")` / `Dial("wss://...")`:
+  - The tonic stack has no official HTTP/2-over-WebSocket client connector in core crates.
+  - A safe implementation requires a custom bridge/proxy layer and is intentionally out of scope for this minimal core.
 - Full Go-style transport-agnostic gRPC client helpers (`Dial`, `DialStdio`, `DialMem`, `DialWebSocket`):
   - Rust currently exposes direct transport primitives (`dial_tcp`, `dial_unix`, `listen_stdio`) and still needs a dedicated tonic adapter layer for equivalent high-level helpers.
 
