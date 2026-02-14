@@ -1,16 +1,32 @@
 use std::fs;
 use std::path::PathBuf;
 
-#[test]
-fn test_cert_json_declares_level1_executables_and_stdio_dial() {
+fn read_cert_json() -> serde_yaml::Value {
     let cert_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("cert.json");
     let cert_raw = fs::read_to_string(cert_path).unwrap();
-    let cert: serde_yaml::Value = serde_yaml::from_str(&cert_raw).unwrap();
+    serde_yaml::from_str(&cert_raw).unwrap()
+}
+
+#[test]
+fn test_cert_json_declares_level1_executables_and_stdio_dial() {
+    let cert = read_cert_json();
 
     assert_eq!(cert["executables"]["echo_server"], "./bin/echo-server");
     assert_eq!(cert["executables"]["echo_client"], "./bin/echo-client");
     assert_eq!(cert["capabilities"]["grpc_dial_tcp"], true);
     assert_eq!(cert["capabilities"]["grpc_dial_stdio"], true);
+}
+
+#[test]
+fn test_cert_json_executables_point_to_existing_files() {
+    let cert = read_cert_json();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let echo_server = cert["executables"]["echo_server"].as_str().unwrap();
+    let echo_client = cert["executables"]["echo_client"].as_str().unwrap();
+
+    assert!(manifest_dir.join(echo_server).is_file());
+    assert!(manifest_dir.join(echo_client).is_file());
 }
 
 #[test]
