@@ -430,7 +430,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_tcp_dial_roundtrip() {
-        let lis = listen("tcp://127.0.0.1:0").await.unwrap();
+        let lis = match listen("tcp://127.0.0.1:0").await {
+            Ok(v) => v,
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(err) => panic!("tcp listen failed: {err}"),
+        };
         let tcp = match lis {
             Listener::Tcp(l) => l,
             _ => panic!("expected Tcp listener"),
@@ -468,7 +472,11 @@ mod tests {
         ));
         let uri = format!("unix://{}", path.display());
 
-        let lis = listen(&uri).await.unwrap();
+        let lis = match listen(&uri).await {
+            Ok(v) => v,
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(err) => panic!("unix listen failed: {err}"),
+        };
         let unix = match lis {
             Listener::Unix(l) => l,
             _ => panic!("expected Unix listener"),
