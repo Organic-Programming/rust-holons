@@ -58,6 +58,16 @@ fn test_echo_scripts_exist() {
     assert!(holon_rpc_server.is_file());
 }
 
+#[test]
+fn test_go_helper_files_exist_for_wrappers() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let echo_server_helper = manifest_dir.join("cmd/echo-server-go/main.go");
+    let holon_rpc_client_helper = manifest_dir.join("cmd/holon-rpc-client-go/main.go");
+
+    assert!(echo_server_helper.is_file());
+    assert!(holon_rpc_client_helper.is_file());
+}
+
 #[cfg(unix)]
 #[test]
 fn test_echo_scripts_are_executable() {
