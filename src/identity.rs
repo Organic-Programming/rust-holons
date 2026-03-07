@@ -1,10 +1,10 @@
-//! Parse HOLON.md identity files.
+//! Parse holon.yaml identity files.
 
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
-/// Parsed identity from a HOLON.md file.
+/// Parsed identity from a holon.yaml file.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct HolonIdentity {
     #[serde(default)]
@@ -37,20 +37,14 @@ pub struct HolonIdentity {
     pub aliases: Vec<String>,
 }
 
-/// Parse a HOLON.md file and return its identity.
+/// Parse a holon.yaml file and return its identity.
 pub fn parse_holon(path: &Path) -> Result<HolonIdentity, Box<dyn std::error::Error>> {
     let text = fs::read_to_string(path)?;
-
-    if !text.starts_with("---") {
-        return Err(format!("{}: missing YAML frontmatter", path.display()).into());
+    let value: serde_yaml::Value = serde_yaml::from_str(&text)?;
+    if !value.is_mapping() {
+        return Err(format!("{}: holon.yaml must be a YAML mapping", path.display()).into());
     }
-
-    let end = text[3..]
-        .find("---")
-        .ok_or_else(|| format!("{}: unterminated YAML frontmatter", path.display()))?;
-
-    let frontmatter = &text[3..3 + end].trim();
-    let identity: HolonIdentity = serde_yaml::from_str(frontmatter)?;
+    let identity: HolonIdentity = serde_yaml::from_value(value)?;
     Ok(identity)
 }
 
@@ -62,12 +56,12 @@ mod tests {
     #[test]
     fn test_parse_holon() {
         let dir = std::env::temp_dir();
-        let path = dir.join("test_holon_rust.md");
+        let path = dir.join("holon.yaml");
         let mut f = fs::File::create(&path).unwrap();
         writeln!(
             f,
-            "---\nuuid: \"abc-123\"\ngiven_name: \"test\"\nfamily_name: \"Test\"\n\
-             motto: \"A test.\"\nclade: \"deterministic/pure\"\nlang: \"rust\"\n---\n# test"
+            "uuid: \"abc-123\"\ngiven_name: \"test\"\nfamily_name: \"Test\"\n\
+             motto: \"A test.\"\nclade: \"deterministic/pure\"\nlang: \"rust\""
         )
         .unwrap();
 
@@ -80,10 +74,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_missing_frontmatter() {
+    fn test_parse_invalid_mapping() {
         let dir = std::env::temp_dir();
-        let path = dir.join("no_fm_rust.md");
-        fs::write(&path, "# No frontmatter\n").unwrap();
+        let path = dir.join("invalid_holon_rust.yaml");
+        fs::write(&path, "- not\n- a\n- mapping\n").unwrap();
         assert!(parse_holon(&path).is_err());
         fs::remove_file(&path).unwrap();
     }
