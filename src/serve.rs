@@ -5,10 +5,13 @@ use std::convert::Infallible;
 use std::error::Error;
 #[cfg(unix)]
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_stream::wrappers::TcpListenerStream;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
+use tokio_stream::Stream;
 use tonic::body::BoxBody;
 use tonic::codegen::http::{Request, Response};
 use tonic::server::NamedService;
@@ -57,7 +60,7 @@ macro_rules! serve_router {
                 announce_bound_uri("stdio://", options);
                 router
                     .serve_with_incoming_shutdown(
-                        tokio_stream::iter(vec![Ok::<_, std::io::Error>(transport::listen_stdio()?)]),
+                        StdioIncoming::new(transport::listen_stdio()?),
                         shutdown_signal(),
                     )
                     .await?;
@@ -170,7 +173,9 @@ where
     Svc::Future: Send + 'static,
 {
     let mut builder = Server::builder().accept_http1(options.accept_http1);
-    let router = builder.add_optional_service(extra_service).add_service(service);
+    let router = builder
+        .add_optional_service(extra_service)
+        .add_service(service);
     serve_router!(router, listen_uri, options)
 }
 
@@ -213,11 +218,46 @@ fn boxed_err(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     ))
 }
 
+/// Hold a single stdio connection open for the lifetime of the server.
+///
+/// `serve_with_incoming_shutdown` treats the end of the incoming stream as a
+/// signal that the server can drain and exit. For stdio we only ever have one
+/// transport, so returning `None` immediately after yielding it makes the
+/// server quit before the client sends its first RPC.
+struct StdioIncoming<R = tokio::io::Stdin, W = tokio::io::Stdout> {
+    transport: Option<StdioTransport<R, W>>,
+}
+
+impl<R, W> StdioIncoming<R, W> {
+    fn new(transport: StdioTransport<R, W>) -> Self {
+        Self {
+            transport: Some(transport),
+        }
+    }
+}
+
+impl<R, W> Stream for StdioIncoming<R, W>
+where
+    R: Unpin,
+    W: Unpin,
+{
+    type Item = std::io::Result<StdioTransport<R, W>>;
+
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if let Some(transport) = this.transport.take() {
+            return Poll::Ready(Some(Ok(transport)));
+        }
+        Poll::Pending
+    }
+}
+
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
-        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler");
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("SIGTERM handler");
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = terminate.recv() => {}
@@ -243,6 +283,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::{timeout, Duration};
+    use tokio_stream::StreamExt;
 
     #[test]
     fn test_parse_listen() {
@@ -274,5 +316,19 @@ mod tests {
     fn test_unix_socket_path() {
         let path = unix_socket_path("unix:///tmp/holons.sock").unwrap();
         assert_eq!(path.unwrap(), std::path::PathBuf::from("/tmp/holons.sock"));
+    }
+
+    #[tokio::test]
+    async fn test_stdio_incoming_yields_once_then_waits() {
+        let mut incoming =
+            StdioIncoming::new(StdioTransport::new(tokio::io::empty(), tokio::io::sink()));
+
+        assert!(incoming.next().await.unwrap().is_ok());
+        assert!(
+            timeout(Duration::from_millis(50), incoming.next())
+                .await
+                .is_err(),
+            "stdio incoming should stay pending after the first connection"
+        );
     }
 }
